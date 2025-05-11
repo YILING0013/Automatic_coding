@@ -96,7 +96,6 @@ def to_rgb(image: np.ndarray) -> np.ndarray:
         image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
     elif image.ndim == 3 and image.shape[2] == 3:
         # 检查是否为BGR格式并转换为RGB
-        # OpenCV默认以BGR读取图像，所以通常需要转换为RGB
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     return image
 
@@ -329,27 +328,19 @@ def apply_light_mosaic(image_cv, box, intensity=0.8, feather=30, color=(255, 255
     
     # 生成径向渐变
     y_indices, x_indices = np.ogrid[:y2-y1, :x2-x1]
-    # 计算到中心的距离
     dist_from_center = np.sqrt((x_indices - center_x)**2 + (y_indices - center_y)**2)
-    # 最大距离
     max_dist = np.sqrt(center_x**2 + center_y**2)
-    # 标准化并反转，中心为1，边缘为0
     mask = np.clip(1.0 - dist_from_center / max_dist, 0, 1)
-    # 应用羽化效果，加强中心区域
     mask = np.power(mask, 1.0 / (feather / 100.0 + 0.1))
     
-    # 提取ROI区域
     roi = output_image[y1:y2, x1:x2].copy()
     
-    # 创建光效图层
     light_layer = np.full_like(roi, color, dtype=np.uint8)
     
-    # 对每个通道应用渐变蒙版
     for c in range(3):
         roi_channel = roi[:,:,c].astype(np.float32)
         light_channel = light_layer[:,:,c].astype(np.float32)
         
-        # 应用强度和渐变
         blended_channel = roi_channel * (1.0 - mask * intensity) + light_channel * (mask * intensity)
         roi[:,:,c] = np.clip(blended_channel, 0, 255).astype(np.uint8)
     
