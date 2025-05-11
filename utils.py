@@ -95,9 +95,9 @@ def to_rgb(image: np.ndarray) -> np.ndarray:
     elif image.ndim == 3 and image.shape[2] == 4:  # RGBA
         image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
     elif image.ndim == 3 and image.shape[2] == 3:
-        # 确保是RGB，如果是BGR则转换
-        if cv2.imreadmodes:  # 检查是否有读取模式标志
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        # 检查是否为BGR格式并转换为RGB
+        # OpenCV默认以BGR读取图像，所以通常需要转换为RGB
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     return image
 
 def to_rgba(image: np.ndarray) -> np.ndarray:

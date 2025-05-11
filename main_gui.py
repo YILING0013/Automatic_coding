@@ -16,7 +16,7 @@ from image_processor import (
     get_available_labels,
     DEFAULT_HEAD_PATH
 )
-from utils import load_models
+from utils import detect_censors, load_models
 
 # 全局变量
 current_image_path = None
@@ -35,6 +35,11 @@ class ImageMosaicApp(tb.Window):
         super().__init__(themename="superhero")
         self.title("图像打码工具")
         self.geometry("1250x900")
+
+        # 检测结果缓存相关变量
+        self.cached_detection_results = None  # 缓存当前图像的检测结果
+        self.last_detection_conf = None       # 上次检测使用的置信度阈值
+        self.last_detection_iou = None        # 上次检测使用的IOU阈值
 
         # 数据
         self.input_path = tk.StringVar()
@@ -108,14 +113,14 @@ class ImageMosaicApp(tb.Window):
         
         tb.Label(self.common_params_frame, text="区域缩放:").grid(row=0, column=0, padx=5, pady=2, sticky=W)
         scale_scale = tb.Scale(self.common_params_frame, from_=0.5, to=2.0, variable=self.scale_var, 
-                             orient=HORIZONTAL, bootstyle="info", command=lambda _: self.on_param_change())
+                     orient=HORIZONTAL, bootstyle="info", command=self.on_param_change)
         scale_scale.grid(row=0, column=1, padx=5, pady=2, sticky=EW)
         tb.Label(self.common_params_frame, textvariable=tk.StringVar(value=lambda: f"{self.scale_var.get():.2f}"),
                width=4).grid(row=0, column=2, padx=5, pady=2)
         
         tb.Label(self.common_params_frame, text="透明度:").grid(row=1, column=0, padx=5, pady=2, sticky=W)
         alpha_scale = tb.Scale(self.common_params_frame, from_=0.0, to=1.0, variable=self.alpha_var, 
-                             orient=HORIZONTAL, bootstyle="info", command=lambda _: self.on_param_change())
+                     orient=HORIZONTAL, bootstyle="info", command=self.on_param_change)
         alpha_scale.grid(row=1, column=1, padx=5, pady=2, sticky=EW)
         tb.Label(self.common_params_frame, textvariable=tk.StringVar(value=lambda: f"{self.alpha_var.get():.2f}"),
                width=4).grid(row=1, column=2, padx=5, pady=2)
@@ -127,7 +132,7 @@ class ImageMosaicApp(tb.Window):
         
         tb.Label(self.blur_params_frame, text="模糊大小:").grid(row=0, column=0, padx=5, pady=2, sticky=W)
         blur_kernel_scale = tb.Scale(self.blur_params_frame, from_=3, to=101, variable=self.blur_kernel_size_var, 
-                                   orient=HORIZONTAL, bootstyle="warning", command=lambda _: self.on_param_change())
+                           orient=HORIZONTAL, bootstyle="warning", command=self.on_param_change)
         blur_kernel_scale.grid(row=0, column=1, padx=5, pady=2, sticky=EW)
         tb.Label(self.blur_params_frame, textvariable=tk.StringVar(value=lambda: f"{self.blur_kernel_size_var.get()}"),
                width=4).grid(row=0, column=2, padx=5, pady=2)
@@ -150,7 +155,7 @@ class ImageMosaicApp(tb.Window):
         # 线条粗细
         tb.Label(self.line_params_frame, text="线条粗细:").grid(row=1, column=0, padx=5, pady=2, sticky=W)
         line_thickness_scale = tb.Scale(self.line_params_frame, from_=1, to=20, variable=self.line_thickness_var,
-                                      orient=HORIZONTAL, bootstyle="warning", command=lambda _: self.on_param_change())
+                              orient=HORIZONTAL, bootstyle="warning", command=self.on_param_change)
         line_thickness_scale.grid(row=1, column=1, padx=5, pady=2, sticky=EW)
         tb.Label(self.line_params_frame, textvariable=tk.StringVar(value=lambda: f"{self.line_thickness_var.get()}"),
                width=4).grid(row=1, column=2, padx=5, pady=2)
@@ -158,7 +163,7 @@ class ImageMosaicApp(tb.Window):
         # 线条间距
         tb.Label(self.line_params_frame, text="线条间距:").grid(row=2, column=0, padx=5, pady=2, sticky=W)
         line_spacing_scale = tb.Scale(self.line_params_frame, from_=5, to=50, variable=self.line_spacing_var,
-                                    orient=HORIZONTAL, bootstyle="warning", command=lambda _: self.on_param_change())
+                            orient=HORIZONTAL, bootstyle="warning", command=self.on_param_change)
         line_spacing_scale.grid(row=2, column=1, padx=5, pady=2, sticky=EW)
         tb.Label(self.line_params_frame, textvariable=tk.StringVar(value=lambda: f"{self.line_spacing_var.get()}"),
                width=4).grid(row=2, column=2, padx=5, pady=2)
@@ -183,14 +188,14 @@ class ImageMosaicApp(tb.Window):
         
         tb.Label(self.light_params_frame, text="光强度:").grid(row=0, column=0, padx=5, pady=2, sticky=W)
         light_intensity_scale = tb.Scale(self.light_params_frame, from_=0.1, to=1.0, variable=self.light_intensity_var,
-                                       orient=HORIZONTAL, bootstyle="warning", command=lambda _: self.on_param_change())
+                               orient=HORIZONTAL, bootstyle="warning", command=self.on_param_change)
         light_intensity_scale.grid(row=0, column=1, padx=5, pady=2, sticky=EW)
         tb.Label(self.light_params_frame, textvariable=tk.StringVar(value=lambda: f"{self.light_intensity_var.get():.2f}"),
                width=4).grid(row=0, column=2, padx=5, pady=2)
         
         tb.Label(self.light_params_frame, text="羽化边缘:").grid(row=1, column=0, padx=5, pady=2, sticky=W)
         light_feather_scale = tb.Scale(self.light_params_frame, from_=5, to=100, variable=self.light_feather_var,
-                                     orient=HORIZONTAL, bootstyle="warning", command=lambda _: self.on_param_change())
+                             orient=HORIZONTAL, bootstyle="warning", command=self.on_param_change)
         light_feather_scale.grid(row=1, column=1, padx=5, pady=2, sticky=EW)
         tb.Label(self.light_params_frame, textvariable=tk.StringVar(value=lambda: f"{self.light_feather_var.get()}"),
                width=4).grid(row=1, column=2, padx=5, pady=2)
@@ -287,7 +292,7 @@ class ImageMosaicApp(tb.Window):
         self.mist_color_preview.config(background=self.mist_color_var.get())
         self.light_color_preview.config(background=self.light_color_var.get())
 
-    def on_param_change(self):
+    def on_param_change(self, *args):
         """当任何参数变化时更新预览"""
         if current_image_path and original_pil_image:
             self.update_preview()
@@ -372,6 +377,11 @@ class ImageMosaicApp(tb.Window):
             self.display_image_on_label(original_pil_image, self.original_image_label)
             self.display_image_on_label(None, self.processed_image_label, "效果预览区域")
             self.status_label.config(text=f"已加载: {Path(image_path).name}")
+            
+            # 重置检测缓存，因为图像已更改
+            self.cached_detection_results = None
+            self.last_detection_conf = None
+            self.last_detection_iou = None
         except Exception as e:
             messagebox.showerror("加载失败", f"无法加载图片: {e}")
             original_pil_image = None
@@ -386,7 +396,14 @@ class ImageMosaicApp(tb.Window):
                 conf_threshold = self.conf_threshold_var.get()
                 iou_threshold = self.iou_threshold_var.get()
                 
-                names, err = get_image_object_names(current_image_path, conf_threshold, iou_threshold)
+                # 使用更新版本的get_image_object_names函数，可以同时获取检测结果
+                names, results, err = get_image_object_names(current_image_path, conf_threshold, iou_threshold)
+                
+                # 保存检测参数和结果
+                self.last_detection_conf = conf_threshold
+                self.last_detection_iou = iou_threshold
+                self.cached_detection_results = results
+                
                 if err:
                     self.status_label.config(text=err)
                     # 如果检测失败，使用预定义标签
@@ -511,14 +528,25 @@ class ImageMosaicApp(tb.Window):
             global processed_pil_image
             custom_path = custom_mosaic_image_path if params["mosaic_type"] == "自定义图像" else None
             
+            # 检查是否需要重新检测（阈值变化）
+            current_conf = params["conf_threshold"]
+            current_iou = params["iou_threshold"]
+            cached_results = self.cached_detection_results
+            
+            if self.last_detection_conf != current_conf or self.last_detection_iou != current_iou:
+                # 阈值变化，需要重新检测
+                cached_results = None
+                self.status_label.config(text="检测参数已变更，正在重新检测...")
+            
+            # 处理图像并传入缓存结果
             _, proc_img, error = process_single_image(
                 current_image_path, 
                 params["mosaic_type"], 
                 selected_regions, 
                 custom_path, 
                 params["line_direction"],
-                params["conf_threshold"],
-                params["iou_threshold"],
+                current_conf,
+                current_iou,
                 params["scale"],
                 params["alpha"],
                 params["blur_kernel_size"],
@@ -527,8 +555,16 @@ class ImageMosaicApp(tb.Window):
                 params["mist_color"],
                 params["light_intensity"],
                 params["light_feather"],
-                params["light_color"]
+                params["light_color"],
+                cached_detection_results=cached_results
             )
+            
+            # 如果没有使用缓存或缓存失效，更新缓存
+            if cached_results is None:
+                self.cached_detection_results = detect_censors(current_image_path, detection_model, 
+                                                             current_conf, current_iou)
+                self.last_detection_conf = current_conf
+                self.last_detection_iou = current_iou
             
             self.progress_bar.stop()
             if error:
@@ -590,14 +626,26 @@ class ImageMosaicApp(tb.Window):
         
         def _update_preview_thread():
             global processed_pil_image
+            
+            # 检查是否需要重新检测（阈值变化）
+            current_conf = params["conf_threshold"]
+            current_iou = params["iou_threshold"]
+            cached_results = self.cached_detection_results
+            
+            # 如果阈值变化了，需要重新检测
+            if self.last_detection_conf != current_conf or self.last_detection_iou != current_iou:
+                cached_results = None
+                self.status_label.config(text="检测参数已变更，正在重新检测...")
+            
+            # 处理图像并传入缓存结果
             _, temp_processed_pil, error = process_single_image(
                 current_image_path, 
                 params["mosaic_type"], 
                 selected_regions, 
                 custom_path, 
                 params["line_direction"],
-                params["conf_threshold"],
-                params["iou_threshold"],
+                current_conf,
+                current_iou,
                 params["scale"],
                 params["alpha"],
                 params["blur_kernel_size"],
@@ -606,8 +654,16 @@ class ImageMosaicApp(tb.Window):
                 params["mist_color"],
                 params["light_intensity"],
                 params["light_feather"],
-                params["light_color"]
+                params["light_color"],
+                cached_detection_results=cached_results
             )
+            
+            # 如果没有使用缓存或缓存失效，更新缓存
+            if cached_results is None:
+                self.cached_detection_results = detect_censors(current_image_path, detection_model, 
+                                                              current_conf, current_iou)
+                self.last_detection_conf = current_conf
+                self.last_detection_iou = current_iou
             
             if error:
                 self.status_label.config(text=f"预览更新错误: {error[:100]}...")
@@ -690,35 +746,44 @@ class ImageMosaicApp(tb.Window):
         threading.Thread(target=_batch_thread, daemon=True).start()
 
     def display_image_on_label(self, pil_image, label_widget, placeholder_text="图像区域"):
-        if pil_image:
-            label_width = label_widget.winfo_width()
-            label_height = label_widget.winfo_height()
+        try:
+            if pil_image:
+                label_width = label_widget.winfo_width()
+                label_height = label_widget.winfo_height()
 
-            if label_width <= 1 or label_height <= 1:
-                label_widget.after(50, lambda: self.display_image_on_label(pil_image, label_widget, placeholder_text))
-                return
+                if label_width <= 1 or label_height <= 1:
+                    # 使用after_idle而不是after，避免递归调用
+                    label_widget.after_idle(lambda: self.display_image_on_label(pil_image, label_widget, placeholder_text))
+                    return
 
-            img_copy = pil_image.copy()
-            
-            original_width, original_height = img_copy.size
-            ratio_w = label_width / original_width
-            ratio_h = label_height / original_height
-            scale_ratio = min(ratio_w, ratio_h)
+                img_copy = pil_image.copy()
+                
+                original_width, original_height = img_copy.size
+                ratio_w = label_width / original_width
+                ratio_h = label_height / original_height
+                scale_ratio = min(ratio_w, ratio_h)
 
-            new_width = int(original_width * scale_ratio)
-            new_height = int(original_height * scale_ratio)
+                new_width = int(original_width * scale_ratio)
+                new_height = int(original_height * scale_ratio)
 
-            if new_width > 0 and new_height > 0:
-                img_copy.thumbnail((new_width, new_height), Image.Resampling.LANCZOS)
-                photo = ImageTk.PhotoImage(img_copy)
-                label_widget.config(image=photo, text="")
-                label_widget.image = photo
+                if new_width > 0 and new_height > 0:
+                    img_copy.thumbnail((new_width, new_height), Image.Resampling.LANCZOS)
+                    photo = ImageTk.PhotoImage(img_copy)
+                    # 先保存引用再设置图像，防止垃圾回收
+                    label_widget.image = photo
+                    label_widget.config(image=photo, text="")
+                else:
+                    label_widget.image = None
+                    label_widget.config(image="", text=placeholder_text + "\n(图像过小或尺寸错误)")
             else:
-                label_widget.config(image=None, text=placeholder_text + "\n(图像过小或尺寸错误)")
+                # 先清除旧图像引用，再更新配置
                 label_widget.image = None
-        else:
-            label_widget.config(image=None, text=placeholder_text)
+                label_widget.config(image="", text=placeholder_text)
+        except Exception as e:
+            print(f"显示图像错误: {e}")
+            # 错误恢复处理
             label_widget.image = None
+            label_widget.config(image="", text=f"{placeholder_text}\n(显示错误: {str(e)[:50]})")
 
     def resize_preview_images(self, event=None):
         if original_pil_image:

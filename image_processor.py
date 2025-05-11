@@ -27,7 +27,8 @@ def process_single_image(image_path, mosaic_type, selected_regions, custom_image
                          scale=1.0, alpha=1.0, blur_kernel_size=(31, 31), 
                          line_thickness=5, line_spacing=10, 
                          mist_color=(255, 255, 255),
-                         light_intensity=0.8, light_feather=30, light_color=(255, 255, 255)):
+                         light_intensity=0.8, light_feather=30, light_color=(255, 255, 255),
+                         cached_detection_results=None):
     """
     处理单张图片
     :param image_path: 图像文件路径
@@ -46,6 +47,7 @@ def process_single_image(image_path, mosaic_type, selected_regions, custom_image
     :param light_intensity: 光效强度
     :param light_feather: 光效羽化边缘
     :param light_color: 光效颜色(R,G,B)
+    :param cached_detection_results: 缓存的检测结果，如果提供则使用而不重新检测
     :return: (original_pil_image, processed_pil_image, error_message)
     """
     try:
@@ -55,8 +57,12 @@ def process_single_image(image_path, mosaic_type, selected_regions, custom_image
         if not detection_model:
             return Image.fromarray(original_image), None, "错误：检测模型未能成功加载。"
         
-        # 使用检测模型检测边界框，传入自定义阈值
-        detection_results = detect_censors(image_path, detection_model, conf_threshold, iou_threshold)
+        # 使用缓存的结果或进行新的检测
+        if cached_detection_results is not None:
+            detection_results = cached_detection_results
+        else:
+            # 使用检测模型检测边界框，传入自定义阈值
+            detection_results = detect_censors(image_path, detection_model, conf_threshold, iou_threshold)
         
         filtered_boxes = []
         if detection_results:
@@ -126,6 +132,24 @@ def process_single_image(image_path, mosaic_type, selected_regions, custom_image
         traceback.print_exc()
         return None, None, f"处理图像时发生错误: {e}"
 
+def get_image_object_names(image_path, conf_threshold=0.25, iou_threshold=0.7):
+    """获取图像中可识别的目标类型列表，并返回检测结果"""
+    if not detection_model:
+        return [], None, "错误：检测模型未加载。"
+    try:
+        results = detect_censors(image_path, detection_model, conf_threshold, iou_threshold)
+        detected_names = set()
+        
+        if results:
+            for result in results:
+                _, label, _ = result
+                if label:
+                    detected_names.add(label)
+        
+        return sorted(list(detected_names)), results, None
+    except Exception as e:
+        return [], None, f"分析图像时出错: {e}"
+
 def batch_process_images(input_path, output_folder_path, mosaic_type, selected_regions, 
                          custom_image_path=None, line_direction='horizontal',
                          conf_threshold=0.25, iou_threshold=0.7,
@@ -153,6 +177,9 @@ def batch_process_images(input_path, output_folder_path, mosaic_type, selected_r
     if status_callback:
         status_callback(f"开始处理 {total_files} 个文件...")
 
+    # 批量处理中的检测结果缓存字典
+    detection_cache = {}
+
     for i, file_path in enumerate(files_to_process):
         if status_callback:
             status_callback(f"正在处理: {file_path.name} ({i+1}/{total_files})")
@@ -165,11 +192,20 @@ def batch_process_images(input_path, output_folder_path, mosaic_type, selected_r
             except Exception as e:
                 print(f"预览图像错误: {e}")
 
+        # 检查是否已存在此文件的检测结果
+        file_path_str = str(file_path)
+        cached_results = detection_cache.get(file_path_str)
+
         original_pil, processed_pil_image, error = process_single_image(
-            str(file_path), mosaic_type, selected_regions, custom_image_path, line_direction,
+            file_path_str, mosaic_type, selected_regions, custom_image_path, line_direction,
             conf_threshold, iou_threshold, scale, alpha, blur_kernel_size,
-            line_thickness, line_spacing, mist_color, light_intensity, light_feather, light_color
+            line_thickness, line_spacing, mist_color, light_intensity, light_feather, light_color,
+            cached_detection_results=cached_results
         )
+        
+        # 如果没有使用缓存，则缓存新的检测结果
+        if cached_results is None:
+            detection_cache[file_path_str] = detect_censors(file_path_str, detection_model, conf_threshold, iou_threshold)
         
         # 更新处理后的图像预览
         if image_preview_callback and processed_pil_image:
@@ -200,21 +236,3 @@ def batch_process_images(input_path, output_folder_path, mosaic_type, selected_r
 
     if status_callback:
         status_callback(f"批量处理完成！已处理 {total_files} 个文件。")
-
-def get_image_object_names(image_path, conf_threshold=0.25, iou_threshold=0.7):
-    """获取图像中可识别的目标类型列表"""
-    if not detection_model:
-        return [], "错误：检测模型未加载。"
-    try:
-        results = detect_censors(image_path, detection_model, conf_threshold, iou_threshold)
-        detected_names = set()
-        
-        if results:
-            for result in results:
-                _, label, _ = result
-                if label:
-                    detected_names.add(label)
-        
-        return sorted(list(detected_names)), None
-    except Exception as e:
-        return [], f"分析图像时出错: {e}"
