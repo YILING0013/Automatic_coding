@@ -4,6 +4,7 @@ from PIL import Image, ImageFilter, ImageDraw
 import numpy as np
 import cv2
 import os
+import colorsys
 
 def load_models():
     """加载本地censor检测模型"""
@@ -21,13 +22,20 @@ def load_models():
         print(f"Error loading models: {e}")
         return None, None
 
-def detect_censors(image_path, detection_model):
-    """使用YOLO模型检测图像中的马赛克区域"""
+def detect_censors(image_path, detection_model, conf_threshold=0.25, iou_threshold=0.7):
+    """使用YOLO模型检测图像中的马赛克区域
+    
+    Args:
+        image_path: 图像路径
+        detection_model: YOLO模型
+        conf_threshold: 置信度阈值
+        iou_threshold: IOU阈值
+    """
     if detection_model is None:
         return []
     try:
-        # 使用YOLO进行检测
-        results = detection_model(image_path, conf=0.25, iou=0.7, verbose=False)
+        # 使用YOLO进行检测，使用自定义阈值
+        results = detection_model(image_path, conf=conf_threshold, iou=iou_threshold, verbose=False)
         
         detected_objects = []
         if results and len(results) > 0:
@@ -54,6 +62,31 @@ def detect_censors(image_path, detection_model):
         print(f"Error detecting censors: {e}")
         return []
 
+def adjust_box_by_scale(box, scale, img_shape):
+    """根据比例调整边界框
+    
+    Args:
+        box: 边界框(x1, y1, x2, y2)
+        scale: 比例因子，1为原始大小，>1扩大，<1缩小
+        img_shape: 图像形状(高度, 宽度)
+    
+    Returns:
+        调整后的边界框
+    """
+    x1, y1, x2, y2 = box
+    center_x, center_y = (x1 + x2) / 2, (y1 + y2) / 2
+    width, height = x2 - x1, y2 - y1
+    
+    new_width = width * scale
+    new_height = height * scale
+    
+    new_x1 = max(0, center_x - new_width / 2)
+    new_y1 = max(0, center_y - new_height / 2)
+    new_x2 = min(img_shape[1], center_x + new_width / 2)
+    new_y2 = min(img_shape[0], center_y + new_height / 2)
+    
+    return (new_x1, new_y1, new_x2, new_y2)
+
 def to_rgb(image: np.ndarray) -> np.ndarray:
     if image.ndim == 2:  # Gray
         image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
@@ -61,6 +94,10 @@ def to_rgb(image: np.ndarray) -> np.ndarray:
         image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
     elif image.ndim == 3 and image.shape[2] == 4:  # RGBA
         image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
+    elif image.ndim == 3 and image.shape[2] == 3:
+        # 确保是RGB，如果是BGR则转换
+        if cv2.imreadmodes:  # 检查是否有读取模式标志
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     return image
 
 def to_rgba(image: np.ndarray) -> np.ndarray:
@@ -72,10 +109,22 @@ def to_rgba(image: np.ndarray) -> np.ndarray:
         image = cv2.cvtColor(image, cv2.COLOR_RGB2RGBA)
     return image
 
-def apply_blur_mosaic(image_cv, box, kernel_size=(31, 31)):
-    """应用常规模糊马赛克到指定边界框区域"""
-    x1, y1, x2, y2 = box
-    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+def apply_blur_mosaic(image_cv, box, kernel_size=(31, 31), scale=1.0, alpha=1.0):
+    """应用常规模糊马赛克到指定边界框区域
+    
+    Args:
+        image_cv: 图像
+        box: 边界框(x1, y1, x2, y2)
+        kernel_size: 模糊内核大小
+        scale: 区域缩放比例
+        alpha: 不透明度
+        
+    Returns:
+        处理后的图像
+    """
+    h, w = image_cv.shape[:2]
+    box = adjust_box_by_scale(box, scale, (h, w))
+    x1, y1, x2, y2 = [int(v) for v in box]
     
     output_image = image_cv.copy()
     
@@ -85,17 +134,39 @@ def apply_blur_mosaic(image_cv, box, kernel_size=(31, 31)):
     # 对区域进行模糊
     if roi.size > 0:
         blurred_roi = cv2.GaussianBlur(roi, kernel_size, 0)
-        output_image[y1:y2, x1:x2] = blurred_roi
+        
+        # 应用透明度
+        if alpha < 1.0:
+            output_image[y1:y2, x1:x2] = cv2.addWeighted(roi, 1.0 - alpha, blurred_roi, alpha, 0)
+        else:
+            output_image[y1:y2, x1:x2] = blurred_roi
     
     return output_image
 
-def apply_black_lines_mosaic(image_cv, box, line_thickness=5, spacing=10, direction='horizontal'):
-    """应用动漫风格黑色线条马赛克"""
-    x1, y1, x2, y2 = box
-    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+def apply_black_lines_mosaic(image_cv, box, line_thickness=5, spacing=10, scale=1.0, direction='horizontal', alpha=1.0):
+    """应用动漫风格黑色线条马赛克
+    
+    Args:
+        image_cv: 图像
+        box: 边界框
+        line_thickness: 线条粗细
+        spacing: 线条间距
+        scale: 区域缩放比例
+        direction: 线条方向('horizontal', 'vertical', 'diagonal')
+        alpha: 不透明度
+        
+    Returns:
+        处理后的图像
+    """
+    h, w = image_cv.shape[:2]
+    box = adjust_box_by_scale(box, scale, (h, w))
+    x1, y1, x2, y2 = [int(v) for v in box]
     
     output_image = image_cv.copy()
-    pil_image = Image.fromarray(cv2.cvtColor(output_image, cv2.COLOR_BGR2RGB))
+    
+    # 创建带线条的图层
+    lines_layer = output_image.copy()
+    pil_image = Image.fromarray(cv2.cvtColor(lines_layer, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(pil_image)
     
     if direction == 'horizontal':
@@ -114,13 +185,35 @@ def apply_black_lines_mosaic(image_cv, box, line_thickness=5, spacing=10, direct
             if x_start < x_end and y_start < y_end:
                 draw.line([(x_start, y_start), (x_end, y_end)], fill="black", width=line_thickness)
     
-    output_image = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+    lines_layer = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+    
+    # 应用透明度
+    if 0.0 < alpha < 1.0:
+        # 只在边界框区域内应用透明度混合
+        roi = output_image[y1:y2, x1:x2].copy()
+        lines_roi = lines_layer[y1:y2, x1:x2].copy()
+        output_image[y1:y2, x1:x2] = cv2.addWeighted(roi, 1.0 - alpha, lines_roi, alpha, 0)
+    else:
+        output_image = lines_layer
+    
     return output_image
 
-def apply_white_mist_mosaic(image_cv, box, strength=0.8):
-    """应用白色雾气马赛克"""
-    x1, y1, x2, y2 = box
-    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+def apply_white_mist_mosaic(image_cv, box, strength=0.8, scale=1.0, color=(255, 255, 255)):
+    """应用雾气马赛克
+    
+    Args:
+        image_cv: 图像
+        box: 边界框
+        strength: 雾气强度(0-1)
+        scale: 区域缩放比例
+        color: 雾气颜色(B,G,R)
+        
+    Returns:
+        处理后的图像
+    """
+    h, w = image_cv.shape[:2]
+    box = adjust_box_by_scale(box, scale, (h, w))
+    x1, y1, x2, y2 = [int(v) for v in box]
     
     output_image = image_cv.copy()
     
@@ -132,20 +225,32 @@ def apply_white_mist_mosaic(image_cv, box, strength=0.8):
     if x1 >= x2 or y1 >= y2:
         return output_image
     
-    # 创建白色覆盖层
+    # 创建覆盖层
     roi = output_image[y1:y2, x1:x2].copy()
-    white_layer = np.full_like(roi, 255, dtype=np.uint8)
+    color_layer = np.full_like(roi, color, dtype=np.uint8)
     
     # 混合
-    blended = cv2.addWeighted(roi, 1.0 - strength, white_layer, strength, 0)
+    blended = cv2.addWeighted(roi, 1.0 - strength, color_layer, strength, 0)
     output_image[y1:y2, x1:x2] = blended
     
     return output_image
 
-def apply_custom_image_mosaic(image_cv_rgb, box, custom_image_rgba_np):
-    """应用自定义图像马赛克"""
-    x1, y1, x2, y2 = box
-    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+def apply_custom_image_mosaic(image_cv_rgb, box, custom_image_rgba_np, scale=1.0, alpha=None):
+    """应用自定义图像马赛克
+    
+    Args:
+        image_cv_rgb: RGB图像
+        box: 边界框
+        custom_image_rgba_np: RGBA自定义图像
+        scale: 区域缩放比例
+        alpha: 覆盖强度，若为None则使用图像自身alpha通道
+        
+    Returns:
+        处理后的RGB图像
+    """
+    h, w = image_cv_rgb.shape[:2]
+    box = adjust_box_by_scale(box, scale, (h, w))
+    x1, y1, x2, y2 = [int(v) for v in box]
     
     output_image_rgb = image_cv_rgb.copy()
     
@@ -170,9 +275,16 @@ def apply_custom_image_mosaic(image_cv_rgb, box, custom_image_rgba_np):
     # 分离RGB和Alpha通道
     custom_rgb = resized_custom_image[:, :, :3]
     if resized_custom_image.shape[2] == 4:
-        custom_alpha = resized_custom_image[:, :, 3:4].astype(np.float32) / 255.0
+        if alpha is None:
+            custom_alpha = resized_custom_image[:, :, 3:4].astype(np.float32) / 255.0
+        else:
+            # 使用用户指定的alpha值
+            custom_alpha = np.ones((target_height, target_width, 1), dtype=np.float32) * alpha
     else:
-        custom_alpha = np.ones((target_height, target_width, 1), dtype=np.float32)
+        if alpha is None:
+            custom_alpha = np.ones((target_height, target_width, 1), dtype=np.float32)
+        else:
+            custom_alpha = np.ones((target_height, target_width, 1), dtype=np.float32) * alpha
     
     # 应用Alpha混合
     roi = output_image_rgb[y1:y2, x1:x2].astype(np.float32)
@@ -182,3 +294,69 @@ def apply_custom_image_mosaic(image_cv_rgb, box, custom_image_rgba_np):
     output_image_rgb[y1:y2, x1:x2] = blended.astype(np.uint8)
     
     return output_image_rgb
+
+def apply_light_mosaic(image_cv, box, intensity=0.8, feather=30, color=(255, 255, 255), scale=1.0):
+    """应用炫光马赛克效果
+    
+    Args:
+        image_cv: 图像
+        box: 边界框
+        intensity: 光强度(0-1)
+        feather: 羽化边缘像素数
+        color: 光颜色(B,G,R)
+        scale: 区域缩放比例
+        
+    Returns:
+        处理后的图像
+    """
+    h, w = image_cv.shape[:2]
+    box = adjust_box_by_scale(box, scale, (h, w))
+    x1, y1, x2, y2 = [int(v) for v in box]
+    
+    output_image = image_cv.copy()
+    
+    # 确保区域在图像范围内
+    h, w = output_image.shape[:2]
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(w, x2), min(h, y2)
+    
+    if x1 >= x2 or y1 >= y2:
+        return output_image
+    
+    # 创建蒙版，中心亮，边缘暗
+    mask = np.zeros((y2-y1, x2-x1), dtype=np.float32)
+    center_x, center_y = (x2-x1)//2, (y2-y1)//2
+    
+    # 生成径向渐变
+    y_indices, x_indices = np.ogrid[:y2-y1, :x2-x1]
+    # 计算到中心的距离
+    dist_from_center = np.sqrt((x_indices - center_x)**2 + (y_indices - center_y)**2)
+    # 最大距离
+    max_dist = np.sqrt(center_x**2 + center_y**2)
+    # 标准化并反转，中心为1，边缘为0
+    mask = np.clip(1.0 - dist_from_center / max_dist, 0, 1)
+    # 应用羽化效果，加强中心区域
+    mask = np.power(mask, 1.0 / (feather / 100.0 + 0.1))
+    
+    # 提取ROI区域
+    roi = output_image[y1:y2, x1:x2].copy()
+    
+    # 创建光效图层
+    light_layer = np.full_like(roi, color, dtype=np.uint8)
+    
+    # 对每个通道应用渐变蒙版
+    for c in range(3):
+        roi_channel = roi[:,:,c].astype(np.float32)
+        light_channel = light_layer[:,:,c].astype(np.float32)
+        
+        # 应用强度和渐变
+        blended_channel = roi_channel * (1.0 - mask * intensity) + light_channel * (mask * intensity)
+        roi[:,:,c] = np.clip(blended_channel, 0, 255).astype(np.uint8)
+    
+    output_image[y1:y2, x1:x2] = roi
+    
+    return output_image
+
+def get_available_labels():
+    """获取可用的标签列表"""
+    return ["nipple_f", "penis", "pussy"]
