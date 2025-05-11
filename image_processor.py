@@ -51,7 +51,6 @@ def process_single_image(image_path, mosaic_type, selected_regions, custom_image
     :return: (original_pil_image, processed_pil_image, error_message)
     """
     try:
-        # 读取图像
         original_image = to_rgb(imread(image_path))
         
         if not detection_model:
@@ -78,7 +77,6 @@ def process_single_image(image_path, mosaic_type, selected_regions, custom_image
         # 应用选择的马赛克类型
         processed_image = original_image.copy()
         
-        # 为每个边界框应用马赛克
         for box in filtered_boxes:
             if mosaic_type == "常规模糊":
                 processed_image_bgr = cv2.cvtColor(processed_image, cv2.COLOR_RGB2BGR)
@@ -221,8 +219,12 @@ def batch_process_images(input_path, output_folder_path, mosaic_type, selected_r
                 
                 output_file_path.parent.mkdir(parents=True, exist_ok=True)
                 
-                # 修复颜色空间问题：直接从PIL图像保存，避免额外的颜色空间转换
-                processed_pil_image.save(str(output_file_path))
+                if processed_pil_image.mode == 'RGBA':
+                    rgb_img = Image.new('RGB', processed_pil_image.size, (255, 255, 255))
+                    rgb_img.paste(processed_pil_image, mask=processed_pil_image.split()[3])
+                    rgb_img.save(str(output_file_path))
+                else:
+                    processed_pil_image.convert('RGB').save(str(output_file_path))
 
             except Exception as e:
                 if status_callback:

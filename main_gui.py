@@ -25,6 +25,10 @@ processed_pil_image = None
 custom_mosaic_image_path = None
 custom_mosaic_pil_image = None
 
+# 预览区域的固定尺寸
+PREVIEW_WIDTH = 900
+PREVIEW_HEIGHT = 1250
+
 # 加载模型
 classification_model, detection_model = load_models()
 if not detection_model:
@@ -83,19 +87,21 @@ class ImageMosaicApp(tb.Window):
         model_params_frame = tb.Labelframe(controls_frame, text="模型参数", padding=5)
         model_params_frame.pack(fill=X, pady=5)
         
+        # 置信度阈值
         tb.Label(model_params_frame, text="置信度阈值:").grid(row=0, column=0, padx=5, pady=2, sticky=W)
+        self.conf_value_label = tb.Label(model_params_frame, text=f"{self.conf_threshold_var.get():.2f}", width=4)
+        self.conf_value_label.grid(row=0, column=2, padx=5, pady=2)
         conf_scale = tb.Scale(model_params_frame, from_=0.1, to=1.0, variable=self.conf_threshold_var, 
-                            orient=HORIZONTAL, bootstyle="success")
+                            orient=HORIZONTAL, bootstyle="success", command=self.update_conf_label)
         conf_scale.grid(row=0, column=1, padx=5, pady=2, sticky=EW)
-        tb.Label(model_params_frame, textvariable=tk.StringVar(value=lambda: f"{self.conf_threshold_var.get():.2f}"),
-               width=4).grid(row=0, column=2, padx=5, pady=2)
         
+        # IOU阈值
         tb.Label(model_params_frame, text="IOU阈值:").grid(row=1, column=0, padx=5, pady=2, sticky=W)
+        self.iou_value_label = tb.Label(model_params_frame, text=f"{self.iou_threshold_var.get():.2f}", width=4)
+        self.iou_value_label.grid(row=1, column=2, padx=5, pady=2)
         iou_scale = tb.Scale(model_params_frame, from_=0.1, to=1.0, variable=self.iou_threshold_var, 
-                           orient=HORIZONTAL, bootstyle="success")
+                           orient=HORIZONTAL, bootstyle="success", command=self.update_iou_label)
         iou_scale.grid(row=1, column=1, padx=5, pady=2, sticky=EW)
-        tb.Label(model_params_frame, textvariable=tk.StringVar(value=lambda: f"{self.iou_threshold_var.get():.2f}"),
-               width=4).grid(row=1, column=2, padx=5, pady=2)
         
         model_params_frame.columnconfigure(1, weight=1)
 
@@ -111,31 +117,34 @@ class ImageMosaicApp(tb.Window):
         self.common_params_frame = tb.Labelframe(mosaic_frame, text="通用参数", padding=5)
         self.common_params_frame.pack(fill=X, pady=5)
         
+        # 区域缩放
         tb.Label(self.common_params_frame, text="区域缩放:").grid(row=0, column=0, padx=5, pady=2, sticky=W)
+        self.scale_value_label = tb.Label(self.common_params_frame, text=f"{self.scale_var.get():.2f}", width=4)
+        self.scale_value_label.grid(row=0, column=2, padx=5, pady=2)
         scale_scale = tb.Scale(self.common_params_frame, from_=0.5, to=2.0, variable=self.scale_var, 
-                     orient=HORIZONTAL, bootstyle="info", command=self.on_param_change)
+                     orient=HORIZONTAL, bootstyle="info", command=self.update_scale_label)
         scale_scale.grid(row=0, column=1, padx=5, pady=2, sticky=EW)
-        tb.Label(self.common_params_frame, textvariable=tk.StringVar(value=lambda: f"{self.scale_var.get():.2f}"),
-               width=4).grid(row=0, column=2, padx=5, pady=2)
         
+        # 透明度
         tb.Label(self.common_params_frame, text="透明度:").grid(row=1, column=0, padx=5, pady=2, sticky=W)
+        self.alpha_value_label = tb.Label(self.common_params_frame, text=f"{self.alpha_var.get():.2f}", width=4)
+        self.alpha_value_label.grid(row=1, column=2, padx=5, pady=2)
         alpha_scale = tb.Scale(self.common_params_frame, from_=0.0, to=1.0, variable=self.alpha_var, 
-                     orient=HORIZONTAL, bootstyle="info", command=self.on_param_change)
+                     orient=HORIZONTAL, bootstyle="info", command=self.update_alpha_label)
         alpha_scale.grid(row=1, column=1, padx=5, pady=2, sticky=EW)
-        tb.Label(self.common_params_frame, textvariable=tk.StringVar(value=lambda: f"{self.alpha_var.get():.2f}"),
-               width=4).grid(row=1, column=2, padx=5, pady=2)
         
         self.common_params_frame.columnconfigure(1, weight=1)
         
         # 模糊参数
         self.blur_params_frame = tb.Labelframe(mosaic_frame, text="模糊参数", padding=5)
         
+        # 模糊大小
         tb.Label(self.blur_params_frame, text="模糊大小:").grid(row=0, column=0, padx=5, pady=2, sticky=W)
+        self.blur_value_label = tb.Label(self.blur_params_frame, text=f"{self.blur_kernel_size_var.get()}", width=4)
+        self.blur_value_label.grid(row=0, column=2, padx=5, pady=2)
         blur_kernel_scale = tb.Scale(self.blur_params_frame, from_=3, to=101, variable=self.blur_kernel_size_var, 
-                           orient=HORIZONTAL, bootstyle="warning", command=self.on_param_change)
+                           orient=HORIZONTAL, bootstyle="warning", command=self.update_blur_label)
         blur_kernel_scale.grid(row=0, column=1, padx=5, pady=2, sticky=EW)
-        tb.Label(self.blur_params_frame, textvariable=tk.StringVar(value=lambda: f"{self.blur_kernel_size_var.get()}"),
-               width=4).grid(row=0, column=2, padx=5, pady=2)
         
         self.blur_params_frame.columnconfigure(1, weight=1)
         
@@ -154,19 +163,19 @@ class ImageMosaicApp(tb.Window):
         
         # 线条粗细
         tb.Label(self.line_params_frame, text="线条粗细:").grid(row=1, column=0, padx=5, pady=2, sticky=W)
+        self.line_thickness_value_label = tb.Label(self.line_params_frame, text=f"{self.line_thickness_var.get()}", width=4)
+        self.line_thickness_value_label.grid(row=1, column=2, padx=5, pady=2)
         line_thickness_scale = tb.Scale(self.line_params_frame, from_=1, to=20, variable=self.line_thickness_var,
-                              orient=HORIZONTAL, bootstyle="warning", command=self.on_param_change)
+                              orient=HORIZONTAL, bootstyle="warning", command=self.update_line_thickness_label)
         line_thickness_scale.grid(row=1, column=1, padx=5, pady=2, sticky=EW)
-        tb.Label(self.line_params_frame, textvariable=tk.StringVar(value=lambda: f"{self.line_thickness_var.get()}"),
-               width=4).grid(row=1, column=2, padx=5, pady=2)
         
         # 线条间距
         tb.Label(self.line_params_frame, text="线条间距:").grid(row=2, column=0, padx=5, pady=2, sticky=W)
+        self.line_spacing_value_label = tb.Label(self.line_params_frame, text=f"{self.line_spacing_var.get()}", width=4)
+        self.line_spacing_value_label.grid(row=2, column=2, padx=5, pady=2)
         line_spacing_scale = tb.Scale(self.line_params_frame, from_=5, to=50, variable=self.line_spacing_var,
-                            orient=HORIZONTAL, bootstyle="warning", command=self.on_param_change)
+                            orient=HORIZONTAL, bootstyle="warning", command=self.update_line_spacing_label)
         line_spacing_scale.grid(row=2, column=1, padx=5, pady=2, sticky=EW)
-        tb.Label(self.line_params_frame, textvariable=tk.StringVar(value=lambda: f"{self.line_spacing_var.get()}"),
-               width=4).grid(row=2, column=2, padx=5, pady=2)
         
         self.line_params_frame.columnconfigure(1, weight=1)
         
@@ -186,19 +195,21 @@ class ImageMosaicApp(tb.Window):
         # 光效参数
         self.light_params_frame = tb.Labelframe(mosaic_frame, text="光效参数", padding=5)
         
+        # 光强度
         tb.Label(self.light_params_frame, text="光强度:").grid(row=0, column=0, padx=5, pady=2, sticky=W)
+        self.light_intensity_value_label = tb.Label(self.light_params_frame, text=f"{self.light_intensity_var.get():.2f}", width=4)
+        self.light_intensity_value_label.grid(row=0, column=2, padx=5, pady=2)
         light_intensity_scale = tb.Scale(self.light_params_frame, from_=0.1, to=1.0, variable=self.light_intensity_var,
-                               orient=HORIZONTAL, bootstyle="warning", command=self.on_param_change)
+                               orient=HORIZONTAL, bootstyle="warning", command=self.update_light_intensity_label)
         light_intensity_scale.grid(row=0, column=1, padx=5, pady=2, sticky=EW)
-        tb.Label(self.light_params_frame, textvariable=tk.StringVar(value=lambda: f"{self.light_intensity_var.get():.2f}"),
-               width=4).grid(row=0, column=2, padx=5, pady=2)
         
+        # 羽化边缘
         tb.Label(self.light_params_frame, text="羽化边缘:").grid(row=1, column=0, padx=5, pady=2, sticky=W)
+        self.light_feather_value_label = tb.Label(self.light_params_frame, text=f"{self.light_feather_var.get()}", width=4)
+        self.light_feather_value_label.grid(row=1, column=2, padx=5, pady=2)
         light_feather_scale = tb.Scale(self.light_params_frame, from_=5, to=100, variable=self.light_feather_var,
-                             orient=HORIZONTAL, bootstyle="warning", command=self.on_param_change)
+                             orient=HORIZONTAL, bootstyle="warning", command=self.update_light_feather_label)
         light_feather_scale.grid(row=1, column=1, padx=5, pady=2, sticky=EW)
-        tb.Label(self.light_params_frame, textvariable=tk.StringVar(value=lambda: f"{self.light_feather_var.get()}"),
-               width=4).grid(row=1, column=2, padx=5, pady=2)
         
         tb.Label(self.light_params_frame, text="光颜色:").grid(row=2, column=0, padx=5, pady=2, sticky=W)
         self.light_color_button = tb.Button(self.light_params_frame, text="选择颜色", 
@@ -259,10 +270,20 @@ class ImageMosaicApp(tb.Window):
         main_frame.grid_columnconfigure(1, weight=1)
         main_frame.grid_rowconfigure(0, weight=1)
 
-        self.original_image_label = tb.Label(preview_frame, text="原图区域", relief="solid", anchor=CENTER)
-        self.original_image_label.pack(side=LEFT, fill=BOTH, expand=YES, padx=5, pady=5)
-        self.processed_image_label = tb.Label(preview_frame, text="效果预览区域", relief="solid", anchor=CENTER)
-        self.processed_image_label.pack(side=LEFT, fill=BOTH, expand=YES, padx=5, pady=5)
+        # 创建固定大小的预览容器
+        self.original_frame = tb.Frame(preview_frame, width=PREVIEW_WIDTH, height=PREVIEW_HEIGHT)
+        self.original_frame.pack(side=LEFT, padx=10, pady=5)
+        self.original_frame.pack_propagate(False)  # 防止框架大小被内容影响
+
+        self.processed_frame = tb.Frame(preview_frame, width=PREVIEW_WIDTH, height=PREVIEW_HEIGHT)
+        self.processed_frame.pack(side=LEFT, padx=10, pady=5)
+        self.processed_frame.pack_propagate(False)  # 防止框架大小被内容影响
+
+        # 在固定框架内添加图像标签
+        self.original_image_label = tb.Label(self.original_frame, text="原图区域", relief="solid", anchor=CENTER)
+        self.original_image_label.pack(fill=BOTH, expand=YES)
+        self.processed_image_label = tb.Label(self.processed_frame, text="效果预览区域", relief="solid", anchor=CENTER)
+        self.processed_image_label.pack(fill=BOTH, expand=YES)
 
         # 底部：状态栏和进度条
         status_bar_frame = tb.Frame(self, padding=(5,2))
@@ -272,12 +293,43 @@ class ImageMosaicApp(tb.Window):
         self.progress_bar = tb.Progressbar(status_bar_frame, mode='determinate', length=200, bootstyle=SUCCESS)
         self.progress_bar.pack(side=RIGHT, padx=5)
         
-        # 绑定事件
-        self.original_image_label.bind("<Configure>", self.resize_preview_images)
-        self.processed_image_label.bind("<Configure>", self.resize_preview_images)
+        self.after_idle(self.update_color_preview)
+
+    def update_conf_label(self, value):
+        self.conf_value_label.config(text=f"{float(value):.2f}")
+        self.on_param_change()
         
-        # 更新颜色预览
-        self.update_color_preview()
+    def update_iou_label(self, value):
+        self.iou_value_label.config(text=f"{float(value):.2f}")
+        self.on_param_change()
+    
+    def update_scale_label(self, value):
+        self.scale_value_label.config(text=f"{float(value):.2f}")
+        self.on_param_change()
+    
+    def update_alpha_label(self, value):
+        self.alpha_value_label.config(text=f"{float(value):.2f}")
+        self.on_param_change()
+    
+    def update_blur_label(self, value):
+        self.blur_value_label.config(text=f"{int(float(value))}")
+        self.on_param_change()
+        
+    def update_line_thickness_label(self, value):
+        self.line_thickness_value_label.config(text=f"{int(float(value))}")
+        self.on_param_change()
+        
+    def update_line_spacing_label(self, value):
+        self.line_spacing_value_label.config(text=f"{int(float(value))}")
+        self.on_param_change()
+        
+    def update_light_intensity_label(self, value):
+        self.light_intensity_value_label.config(text=f"{float(value):.2f}")
+        self.on_param_change()
+        
+    def update_light_feather_label(self, value):
+        self.light_feather_value_label.config(text=f"{int(float(value))}")
+        self.on_param_change()
 
     def select_color(self, color_var):
         """选择颜色并更新预览"""
@@ -606,7 +658,16 @@ class ImageMosaicApp(tb.Window):
         )
         if save_path:
             try:
-                processed_pil_image.save(save_path)
+                # 确保保存为 RGB 格式，解决颜色空间问题
+                if processed_pil_image.mode == 'RGBA':
+                    # 如果有透明通道，需要转换为RGB同时保留图像质量
+                    rgb_img = Image.new('RGB', processed_pil_image.size, (255, 255, 255))
+                    rgb_img.paste(processed_pil_image, mask=processed_pil_image.split()[3])
+                    rgb_img.save(save_path)
+                else:
+                    # 确保是RGB模式
+                    processed_pil_image.convert('RGB').save(save_path)
+                    
                 messagebox.showinfo("保存成功", f"图片已保存到: {save_path}")
                 self.status_label.config(text=f"已保存: {Path(save_path).name}")
             except Exception as e:
@@ -748,26 +809,27 @@ class ImageMosaicApp(tb.Window):
     def display_image_on_label(self, pil_image, label_widget, placeholder_text="图像区域"):
         try:
             if pil_image:
-                label_width = label_widget.winfo_width()
-                label_height = label_widget.winfo_height()
+                # 获取固定尺寸预览区域的大小
+                frame_width = label_widget.master.winfo_width()
+                frame_height = label_widget.master.winfo_height()
 
-                if label_width <= 1 or label_height <= 1:
-                    # 使用after_idle而不是after，避免递归调用
+                if frame_width <= 1 or frame_height <= 1:
+                    # 如果框架尚未完全加载，延迟处理
                     label_widget.after_idle(lambda: self.display_image_on_label(pil_image, label_widget, placeholder_text))
                     return
 
                 img_copy = pil_image.copy()
                 
                 original_width, original_height = img_copy.size
-                ratio_w = label_width / original_width
-                ratio_h = label_height / original_height
+                ratio_w = frame_width / original_width
+                ratio_h = frame_height / original_height
                 scale_ratio = min(ratio_w, ratio_h)
 
                 new_width = int(original_width * scale_ratio)
                 new_height = int(original_height * scale_ratio)
 
                 if new_width > 0 and new_height > 0:
-                    img_copy.thumbnail((new_width, new_height), Image.Resampling.LANCZOS)
+                    img_copy = img_copy.resize((new_width, new_height), Image.Resampling.LANCZOS)
                     photo = ImageTk.PhotoImage(img_copy)
                     # 先保存引用再设置图像，防止垃圾回收
                     label_widget.image = photo
@@ -784,14 +846,6 @@ class ImageMosaicApp(tb.Window):
             # 错误恢复处理
             label_widget.image = None
             label_widget.config(image="", text=f"{placeholder_text}\n(显示错误: {str(e)[:50]})")
-
-    def resize_preview_images(self, event=None):
-        if original_pil_image:
-            self.display_image_on_label(original_pil_image, self.original_image_label)
-        if processed_pil_image:
-            self.display_image_on_label(processed_pil_image, self.processed_image_label)
-        else:
-            self.display_image_on_label(None, self.processed_image_label, "效果预览区域")
 
     def clear_previews(self):
         global original_pil_image, processed_pil_image, current_image_path
