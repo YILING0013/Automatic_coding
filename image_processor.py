@@ -1,0 +1,159 @@
+# image_processor.py
+import os
+from pathlib import Path
+import cv2
+import numpy as np
+from PIL import Image, ImageTk
+from imagecodecs import imread, imwrite
+from utils import (
+    load_models, detect_censors, to_rgb, to_rgba,
+    apply_blur_mosaic, apply_black_lines_mosaic, apply_white_mist_mosaic,
+    apply_custom_image_mosaic
+)
+
+classification_model, detection_model = load_models()
+
+DEFAULT_HEAD_PATH = "assets/head.png"
+
+def get_default_custom_image():
+    try:
+        return to_rgba(imread(DEFAULT_HEAD_PATH))
+    except Exception as e:
+        print(f"Error loading default custom image: {e}")
+        return np.zeros((50, 50, 4), dtype=np.uint8)
+
+def process_single_image(image_path, mosaic_type, selected_regions, custom_image_path=None, line_direction='horizontal'):
+    """
+    处理单张图片
+    :param image_path: 图像文件路径
+    :param mosaic_type: 马赛克类型
+    :param selected_regions: 用户选择要打码的区域名称列表
+    :param custom_image_path: 自定义马赛克图像的路径
+    :param line_direction: 线条方向 ('horizontal', 'vertical', 'diagonal')
+    :return: (original_pil_image, processed_pil_image, error_message)
+    """
+    try:
+        # 读取图像
+        original_image = to_rgb(imread(image_path))
+        
+        if not detection_model:
+            return Image.fromarray(original_image), None, "错误：检测模型未能成功加载。"
+        
+        # 使用检测模型检测边界框
+        detection_results = detect_censors(image_path, detection_model)
+        
+        filtered_boxes = []
+        if detection_results:
+            for result in detection_results:
+                bbox, label, confidence = result
+                # 如果用户选择了特定区域，进行过滤
+                if not selected_regions or label in selected_regions:
+                    filtered_boxes.append(bbox)
+        
+        if not filtered_boxes:
+            return Image.fromarray(original_image), Image.fromarray(original_image), "未检测到需要打码的区域。"
+        
+        # 应用选择的马赛克类型
+        processed_image = original_image.copy()
+        
+        # 为每个边界框应用马赛克
+        for box in filtered_boxes:
+            if mosaic_type == "常规模糊":
+                processed_image_bgr = cv2.cvtColor(processed_image, cv2.COLOR_RGB2BGR)
+                processed_image_bgr = apply_blur_mosaic(processed_image_bgr, box)
+                processed_image = cv2.cvtColor(processed_image_bgr, cv2.COLOR_BGR2RGB)
+            elif mosaic_type == "黑色线条":
+                processed_image_bgr = cv2.cvtColor(processed_image, cv2.COLOR_RGB2BGR)
+                processed_image_bgr = apply_black_lines_mosaic(processed_image_bgr, box, direction=line_direction)
+                processed_image = cv2.cvtColor(processed_image_bgr, cv2.COLOR_BGR2RGB)
+            elif mosaic_type == "白色雾气":
+                processed_image_bgr = cv2.cvtColor(processed_image, cv2.COLOR_RGB2BGR)
+                processed_image_bgr = apply_white_mist_mosaic(processed_image_bgr, box)
+                processed_image = cv2.cvtColor(processed_image_bgr, cv2.COLOR_BGR2RGB)
+            elif mosaic_type == "自定义图像":
+                custom_img_np = None
+                if custom_image_path and os.path.exists(custom_image_path):
+                    custom_img_np = to_rgba(imread(custom_image_path))
+                else:
+                    custom_img_np = get_default_custom_image()
+                
+                processed_image = apply_custom_image_mosaic(processed_image, box, custom_img_np)
+        
+        return Image.fromarray(original_image), Image.fromarray(processed_image), None
+
+    except Exception as e:
+        import traceback
+        print(f"处理图像时发生错误 ({image_path}): {e}")
+        traceback.print_exc()
+        return None, None, f"处理图像时发生错误: {e}"
+
+def batch_process_images(input_path, output_folder_path, mosaic_type, selected_regions, custom_image_path=None, line_direction='horizontal', progress_callback=None, status_callback=None):
+    """批量处理图像"""
+    input_path_obj = Path(input_path)
+    output_folder_obj = Path(output_folder_path)
+    output_folder_obj.mkdir(parents=True, exist_ok=True)
+
+    if input_path_obj.is_file():
+        files_to_process = [input_path_obj]
+    elif input_path_obj.is_dir():
+        supported_extensions = ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp']
+        files_to_process = [p for p in input_path_obj.rglob('*') if p.suffix.lower() in supported_extensions and p.is_file()]
+    else:
+        if status_callback:
+            status_callback(f"错误：输入路径无效: {input_path}")
+        return
+
+    total_files = len(files_to_process)
+    if status_callback:
+        status_callback(f"开始处理 {total_files} 个文件...")
+
+    for i, file_path in enumerate(files_to_process):
+        if status_callback:
+            status_callback(f"正在处理: {file_path.name} ({i+1}/{total_files})")
+
+        _, processed_pil_image, error = process_single_image(
+            str(file_path), mosaic_type, selected_regions, custom_image_path, line_direction
+        )
+
+        if processed_pil_image and not error:
+            try:
+                if input_path_obj.is_dir():
+                    relative_path = file_path.relative_to(input_path_obj)
+                    output_file_path = output_folder_obj / relative_path
+                else:
+                    output_file_path = output_folder_obj / file_path.name
+                
+                output_file_path.parent.mkdir(parents=True, exist_ok=True)
+                processed_cv_bgr = cv2.cvtColor(np.array(processed_pil_image), cv2.COLOR_RGB2BGR)
+                imwrite(str(output_file_path), processed_cv_bgr)
+
+            except Exception as e:
+                if status_callback:
+                    status_callback(f"保存失败 {file_path.name}: {e}")
+        elif error:
+            if status_callback:
+                status_callback(f"处理失败 {file_path.name}: {error}")
+        
+        if progress_callback:
+            progress_callback(i + 1, total_files)
+
+    if status_callback:
+        status_callback(f"批量处理完成！已处理 {total_files} 个文件。")
+
+def get_image_object_names(image_path):
+    """获取图像中可识别的目标类型列表"""
+    if not detection_model:
+        return [], "错误：检测模型未加载。"
+    try:
+        results = detect_censors(image_path, detection_model)
+        detected_names = set()
+        
+        if results:
+            for result in results:
+                _, label, _ = result
+                if label:
+                    detected_names.add(label)
+        
+        return sorted(list(detected_names)), None
+    except Exception as e:
+        return [], f"分析图像时出错: {e}"
